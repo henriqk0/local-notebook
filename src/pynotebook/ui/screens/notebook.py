@@ -43,6 +43,10 @@ class NotebookScreen(Screen):
         with Horizontal():
             with Vertical(id="sources-pane"):
                 yield Static("Sources", id="sources-title")
+                yield Static(
+                    "No sources yet. Press 'a' to add files with ranger.",
+                    id="sources-empty",
+                )
                 yield SourcesTable(id="sources", cursor_type="row")
             with Vertical(id="chat-pane"):
                 with VerticalScroll(id="chat-log"):
@@ -81,6 +85,8 @@ class NotebookScreen(Screen):
         for s in self._sources:
             on = "[x]" if s.enabled else "[ ]"
             table.add_row(on, s.filename, s.status, str(s.token_estimate), key=str(s.id))
+        empty = self.query_one("#sources-empty", Static)
+        empty.display = len(self._sources) == 0
         self._update_footer()
 
     def _update_footer(self) -> None:

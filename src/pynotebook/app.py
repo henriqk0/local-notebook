@@ -22,14 +22,25 @@ class PyNotebookApp(App[None]):
         self.repo: repo.Repository | None = None
         self.cfg = config.load_config()
         self._model_cache = models_cache.ModelCache(config.get_data_dir() / "models_cache.json")
+        self._filter_text = ""
 
     async def on_mount(self) -> None:
+        from .ui.modals import ApiKeyDialog
+
         data_dir = config.get_data_dir()
         db_path = data_dir / "pynotebook.db"
         self.repo = await repo.Repository.from_path(db_path)
         screen = NotebookListScreen()
         await self.push_screen(screen)
         await self._refresh_notebook_list(screen)
+        if not self.cfg.api_key:
+            self.push_screen(ApiKeyDialog(), callback=self._on_api_key)
+
+    def _on_api_key(self, value: str | None) -> None:
+        if value:
+            self.cfg.api_key = value
+            config.save_config(self.cfg)
+            self.notify("API key saved")
 
     async def get_models(self, force_refresh: bool = False) -> list[models_cache.ModelInfo]:
         if not force_refresh:
@@ -154,12 +165,28 @@ class PyNotebookApp(App[None]):
         await self.push_screen(NotebookScreen(nb.id or 0, nb.name))
 
     async def action_filter(self) -> None:
-        pass
+        current = self.screen
+        if not isinstance(current, NotebookListScreen):
+            return
+        from .ui.modals import PathInputDialog
+
+        def _on_dismiss(value: str | None) -> None:
+            if value is None:
+                return
+            self._filter_text = value.strip()
+            self.run_worker(self._refresh_notebook_list(current), exclusive=True)
+
+        self.push_screen(
+            PathInputDialog("Filter notebooks (leave empty to clear):"), callback=_on_dismiss
+        )
 
     async def _refresh_notebook_list(self, screen: NotebookListScreen) -> None:
         if not self.repo:
             return
         nbs = await self.repo.list_notebooks()
+        if self._filter_text:
+            needle = self._filter_text.lower()
+            nbs = [n for n in nbs if needle in n.name.lower() or needle in n.description.lower()]
         table = screen.query_one("DataTable")
         table.clear()
         for nb in nbs:
@@ -171,6 +198,14 @@ class PyNotebookApp(App[None]):
                 sources_count = 0
             updated = nb.updated_at.strftime("%Y-%m-%d %H:%M") if nb.updated_at else ""
             table.add_row(nb.name, nb.description or "", str(sources_count), updated, key=str(nb.id) if nb.id else nb.name)
+
+        if not nbs:
+            if self._filter_text:
+                screen.set_empty_message(f"No notebooks match '{self._filter_text}'. Press / to clear.")
+            else:
+                screen.set_empty_message("No notebooks yet. Press 'n' to create one.")
+        else:
+            screen.set_empty_message("")
 
 
 def main() -> None:

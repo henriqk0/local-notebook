@@ -6,7 +6,7 @@ from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
 from textual.screen import Screen
-from textual.widgets import DataTable, Footer, Header
+from textual.widgets import DataTable, Footer, Header, Static
 
 
 class NotebookListScreen(Screen):
@@ -23,12 +23,16 @@ class NotebookListScreen(Screen):
     def compose(self) -> ComposeResult:
         yield Header()
         with Vertical():
+            yield Static("", id="list-empty")
             yield DataTable(id="notebooks", cursor_type="row")
         yield Footer()
 
     def on_mount(self) -> None:
         table = self.query_one(DataTable)
         table.add_columns("Name", "Description", "#Sources", "Last Updated")
+
+    def set_empty_message(self, message: str) -> None:
+        self.query_one("#list-empty", Static).update(message)
 
     async def action_new_notebook(self) -> None:
         await self.app.action_new_notebook()  # type: ignore[attr-defined]
