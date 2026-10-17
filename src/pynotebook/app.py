@@ -102,7 +102,19 @@ class PyNotebookApp(App[None]):
                 await self._refresh_notebook_list(current)
 
     async def action_open_notebook(self) -> None:
-        pass
+        current = self.screen
+        if not isinstance(current, NotebookListScreen):
+            return
+        if not self.repo:
+            return
+        nbs = await self.repo.list_notebooks()
+        table = current.query_one("DataTable")
+        if not nbs or table.cursor_row is None or table.cursor_row >= len(nbs):
+            return
+        nb = nbs[table.cursor_row]
+        from .ui.screens import NotebookScreen
+
+        await self.push_screen(NotebookScreen(nb.id or 0, nb.name))
 
     async def action_filter(self) -> None:
         pass
