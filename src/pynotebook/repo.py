@@ -223,6 +223,34 @@ class Repository:
         await cur.close()
         return [_row_to_message(r) for r in rows]
 
+    async def search_chunks(
+        self, notebook_id: int, match_query: str, limit: int = 20
+    ) -> list[tuple[int, str, str]]:
+        """BM25-ranked chunk search within a notebook.
+
+        Returns (source_id, filename, text) tuples ordered by relevance.
+        """
+        if not match_query:
+            return []
+        cur = await self.conn.execute(
+            """
+            SELECT c.source_id, s.filename, c.text
+            FROM chunks_fts
+            JOIN chunks c ON c.id = chunks_fts.rowid
+            JOIN sources s ON s.id = c.source_id
+            WHERE chunks_fts MATCH ?
+              AND s.notebook_id = ?
+              AND s.enabled = 1
+              AND s.status = 'ok'
+            ORDER BY bm25(chunks_fts)
+            LIMIT ?
+            """,
+            (match_query, notebook_id, limit),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return [(r[0], r[1], r[2]) for r in rows]
+
     async def clear_messages(self, notebook_id: int) -> bool:
         cur = await self.conn.execute("DELETE FROM messages WHERE notebook_id = ?", (notebook_id,))
         changed = cur.rowcount

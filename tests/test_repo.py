@@ -48,3 +48,29 @@ async def test_sources_and_messages():
         msgs = await r.list_messages(nb.id or 0)
         assert len(msgs) == 1
         await r.close()
+
+
+@pytest.mark.asyncio
+async def test_search_chunks_fts():
+    with tempfile.TemporaryDirectory() as td:
+        db_path = Path(td) / "test.db"
+        r = await repo.Repository.from_path(db_path)
+        nb = await r.create_notebook("N")
+        s = models.Source(
+            notebook_id=nb.id or 0,
+            path="/tmp/x.txt",
+            filename="x.txt",
+            content_text="the quick brown fox",
+            token_estimate=5,
+            enabled=True,
+            status="ok",
+        )
+        s = await r.add_source(s)
+        await r.add_chunks(s.id or 0, [(0, "the quick brown fox"), (1, "lazy dog sleeps")])
+        from pynotebook.llm.context import sanitize_fts_query
+
+        q = sanitize_fts_query("quick fox")
+        results = await r.search_chunks(nb.id or 0, q)
+        assert len(results) >= 1
+        assert results[0][1] == "x.txt"
+        await r.close()
