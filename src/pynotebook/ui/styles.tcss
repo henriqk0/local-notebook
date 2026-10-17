@@ -1,0 +1,5 @@
+/* pynotebook styles - theme-agnostic base */
+Screen {
+    background: $background;
+    color: $text;
+}
