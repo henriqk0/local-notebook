@@ -43,3 +43,16 @@ Screen {
     border: thick $accent;
     align: center middle;
 }
+
+#model-picker {
+    width: 80%;
+    height: 80%;
+    padding: 1 2;
+    background: $surface;
+    border: thick $accent;
+    align: center middle;
+}
+
+#model-table {
+    height: 1fr;
+}

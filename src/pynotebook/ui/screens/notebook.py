@@ -32,6 +32,7 @@ class NotebookScreen(Screen):
         self.notebook_id = notebook_id
         self.notebook_name = notebook_name
         self._sources: list[models.Source] = []
+        self._model: str | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -49,6 +50,10 @@ class NotebookScreen(Screen):
         self.title = self.notebook_name
         table = self.query_one("#sources", DataTable)
         table.add_columns("On", "Filename", "Status", "Tokens")
+        if self.repo:
+            nb = await self.repo.get_notebook(self.notebook_id)
+            if nb:
+                self._model = nb.model
         await self.refresh_sources()
 
     @property
@@ -74,7 +79,7 @@ class NotebookScreen(Screen):
         count = sum(1 for s in self._sources if s.enabled)
         budget = self.cfg().context_token_budget
         status = self.query_one("#chat-status", Static)
-        model = self.cfg().default_model or "(no model)"
+        model = self._model or self.cfg().default_model or "(no model)"
         status.update(f"{model} | {total / 1000:.1f}k / {budget // 1000}k tokens, {count} sources")
 
     def _cursor_source(self) -> models.Source | None:
@@ -222,7 +227,48 @@ class NotebookScreen(Screen):
         self.app.push_screen(SourcePreview(source.filename, text))
 
     async def action_model_picker(self) -> None:
-        pass
+        from ..modals import ModelPicker
+
+        models = await self.app.get_models()  # type: ignore[attr-defined]
+        if not models:
+            self.app.notify("No models available. Check your API key.", severity="warning")
+            return
+        nb = await self.repo.get_notebook(self.notebook_id) if self.repo else None
+        current = (nb.model if nb else None) or self.cfg().default_model
+
+        def _on_dismiss(selection: object) -> None:
+            if selection is None:
+                return
+            model_id = getattr(selection, "model_id", None)
+            save_default = getattr(selection, "save_as_default", False)
+            if not model_id:
+                return
+            self.run_worker(self._apply_model(model_id, save_default), exclusive=True)
+
+        self.app.push_screen(ModelPicker(models, current=current), callback=_on_dismiss)
+
+    async def _apply_model(self, model_id: str, save_default: bool) -> None:
+        self._model = model_id
+        if self.repo:
+            await self.repo.update_notebook(self.notebook_id, model=model_id)
+        if save_default:
+            cfg = self.cfg()
+            cfg.default_model = model_id
+            from ... import config
+
+            config.save_config(cfg)
+        # Clamp budget if model context is smaller
+        models = await self.app.get_models()  # type: ignore[attr-defined]
+        info = next((m for m in models if m.id == model_id), None)
+        if info and info.context_length:
+            cfg = self.cfg()
+            available = max(info.context_length - 4000, 1000)
+            if available < cfg.context_token_budget:
+                cfg.context_token_budget = available
+                self.app.notify(
+                    f"Context budget clamped to {available} tokens for {model_id}"
+                )
+        self._update_footer()
 
     async def action_clear_chat(self) -> None:
         pass

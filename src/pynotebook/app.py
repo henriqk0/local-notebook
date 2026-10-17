@@ -6,7 +6,8 @@ from textual.app import App
 from textual.binding import Binding
 
 from . import config, repo
-from .ui.modals import ConfirmDialog, NotebookForm
+from .llm import models_cache, openrouter
+from .ui.modals import ConfirmDialog, ModelPicker, NotebookForm
 from .ui.screens import NotebookListScreen
 
 
@@ -20,6 +21,7 @@ class PyNotebookApp(App[None]):
         super().__init__(*args, **kwargs)
         self.repo: repo.Repository | None = None
         self.cfg = config.load_config()
+        self._model_cache = models_cache.ModelCache(config.get_data_dir() / "models_cache.json")
 
     async def on_mount(self) -> None:
         data_dir = config.get_data_dir()
@@ -28,6 +30,41 @@ class PyNotebookApp(App[None]):
         screen = NotebookListScreen()
         await self.push_screen(screen)
         await self._refresh_notebook_list(screen)
+
+    async def get_models(self, force_refresh: bool = False) -> list[models_cache.ModelInfo]:
+        if not force_refresh:
+            cached = self._model_cache.load()
+            if cached:
+                return cached
+        if not self.cfg.api_key:
+            return self._model_cache.load() or []
+        client = openrouter.OpenRouterClient(self.cfg.api_key)
+        try:
+            raw = await client.list_models()
+        except openrouter.OpenRouterError:
+            return self._model_cache.load() or []
+        finally:
+            await client.aclose()
+        models = [models_cache.ModelInfo.from_api(m) for m in raw]
+        self._model_cache.save(models)
+        return models
+
+    async def action_default_model(self) -> None:
+        models = await self.get_models()
+        if not models:
+            self.notify("No models available. Check your API key.", severity="warning")
+            return
+
+        def _on_dismiss(selection: object) -> None:
+            if selection is None:
+                return
+            model_id = getattr(selection, "model_id", None)
+            if model_id:
+                self.cfg.default_model = model_id
+                config.save_config(self.cfg)
+                self.notify(f"Default model set to {model_id}")
+
+        self.push_screen(ModelPicker(models, current=self.cfg.default_model), callback=_on_dismiss)
 
     async def action_new_notebook(self) -> None:
         def _on_dismiss(result: tuple[str, str] | None) -> None:
@@ -117,9 +154,6 @@ class PyNotebookApp(App[None]):
         await self.push_screen(NotebookScreen(nb.id or 0, nb.name))
 
     async def action_filter(self) -> None:
-        pass
-
-    async def action_default_model(self) -> None:
         pass
 
     async def _refresh_notebook_list(self, screen: NotebookListScreen) -> None:
