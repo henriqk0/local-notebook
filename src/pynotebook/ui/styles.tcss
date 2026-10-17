@@ -25,6 +25,10 @@ Screen {
     padding: 0 1;
 }
 
+#chat-log Markdown {
+    margin-bottom: 1;
+}
+
 #chat-input {
     height: 5;
     border: solid $accent;
