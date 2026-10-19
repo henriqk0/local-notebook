@@ -175,3 +175,62 @@ async def test_sources_table_space_toggles(tmp_path):
         sources = await r.list_sources(nb.id or 0)
         assert sources[0].enabled is True
     await r.close()
+
+
+@pytest.mark.asyncio
+async def test_add_source_falls_back_to_path_dialog(tmp_path):
+    r, _nb = await _setup(tmp_path)
+    app = ChatApp(r)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        table = screen.query_one("#sources")
+        table.focus()
+        await pilot.pause()
+        await pilot.press("a")
+        await pilot.pause()
+        from pynotebook.ui.modals import PathInputDialog
+
+        assert isinstance(app.screen, PathInputDialog)
+        await pilot.press("escape")
+        await pilot.pause()
+    await r.close()
+
+
+@pytest.mark.asyncio
+async def test_double_submit_is_ignored(tmp_path):
+    r, nb = await _setup(tmp_path)
+    FakeClient.behavior = "slow"
+    app = ChatApp(r)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        await screen._start_generation("first")
+        await screen._start_generation("second")
+        while screen._gen_worker is not None:
+            await pilot.pause()
+            await asyncio.sleep(0.01)
+        msgs = await r.list_messages(nb.id or 0)
+        user_messages = [m.content for m in msgs if m.role == "user"]
+        assert user_messages == ["first"]
+    await r.close()
+
+
+@pytest.mark.asyncio
+async def test_clear_chat_cancels_generation_and_clears(tmp_path):
+    r, nb = await _setup(tmp_path)
+    FakeClient.behavior = "slow"
+    app = ChatApp(r)
+    async with app.run_test() as pilot:
+        screen = app.screen
+        await screen._start_generation("hello")
+        await asyncio.sleep(0.08)
+        await screen._clear_chat()
+        await pilot.pause()
+        msgs = await r.list_messages(nb.id or 0)
+        assert msgs == []
+    await r.close()
+
+
+def test_safe_text_strips_control_characters():
+    from pynotebook.ui.screens.notebook import _safe_text
+
+    assert _safe_text("a\x00b\x1bc\nd\te") == "abc\nd\te"

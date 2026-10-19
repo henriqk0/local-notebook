@@ -1,43 +1,48 @@
 from __future__ import annotations
 
+from ..tokens import CHARS_PER_TOKEN
 
-def chunk_text(text: str, chunk_tokens: int = 800, overlap_tokens: int = 100) -> list[str]:
+
+def chunk_text(
+    text: str, chunk_tokens: int = 800, overlap_tokens: int = 100
+) -> list[str]:
+    if chunk_tokens <= 0:
+        raise ValueError("chunk_tokens must be positive")
     if not text:
         return []
 
-    # Simple char-based approximation to tokens (chars/4)
-    chars_per_token = 4
-    chunk_chars = chunk_tokens * chars_per_token
-    overlap_chars = overlap_tokens * chars_per_token
-
-    # Split on paragraph boundaries first
-    paragraphs = text.split("\n\n")
+    chunk_chars = chunk_tokens * CHARS_PER_TOKEN
+    overlap_chars = min(
+        max(overlap_tokens, 0) * CHARS_PER_TOKEN,
+        chunk_chars // 2,
+    )
     chunks: list[str] = []
     current = ""
 
-    for para in paragraphs:
-        # If adding this paragraph makes it too long, flush current
-        if len(current) + len(para) + 2 > chunk_chars and current:
-            chunks.append(current.strip())
-            # Start new with overlap from end
-            if overlap_chars > 0 and len(current) > overlap_chars:
-                current = current[-overlap_chars:] + "\n\n" + para
-            else:
-                current = para
+    def flush() -> None:
+        nonlocal current
+        if current:
+            chunks.append(current)
+            current = ""
+
+    for para in (p.strip() for p in text.split("\n\n")):
+        if not para:
+            continue
+
+        if len(para) > chunk_chars:
+            flush()
+            step = max(1, chunk_chars - overlap_chars)
+            chunks.extend(para[i : i + chunk_chars] for i in range(0, len(para), step))
+            continue
+
+        if current and len(current) + len(para) + 2 > chunk_chars:
+            previous = current
+            flush()
+            current = (
+                previous[-overlap_chars:] + "\n\n" + para if overlap_chars else para
+            )
         else:
-            current = (current + "\n\n" + para).strip() if current else para
-    if current:
-        chunks.append(current.strip())
+            current = f"{current}\n\n{para}" if current else para
 
-    # Fallback if no chunking happened (very short or no paragraphs)
-    if len(chunks) == 0 and text:
-        # Hard cut
-        for i in range(0, len(text), chunk_chars - overlap_chars):
-            chunk = text[i : i + chunk_chars]
-            if chunk:
-                chunks.append(chunk)
-            if i + chunk_chars >= len(text):
-                break
-
-    # Dedup very similar consecutive empty-ish chunks? Keep simple
-    return [c for c in chunks if c]
+    flush()
+    return chunks

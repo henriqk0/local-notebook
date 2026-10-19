@@ -4,8 +4,20 @@ Screen {
     color: $text;
 }
 
+/* Center every modal panel on screen. */
+ApiKeyDialog,
+ConfirmDialog,
+NotebookForm,
+PathInputDialog,
+ModelPicker,
+SourcePreview,
+HelpScreen {
+    align: center middle;
+}
+
 #sources-pane {
     width: 30%;
+    min-width: 24;
     border-right: solid $accent;
     padding: 0 1;
 }
@@ -29,23 +41,68 @@ Screen {
     margin-bottom: 1;
 }
 
+.msg-user {
+    background: $boost;
+    padding: 0 1;
+}
+
+.msg-assistant {
+    padding: 0 1;
+}
+
+.msg-error {
+    color: $error;
+}
+
 #chat-input {
     height: 5;
     border: solid $accent;
 }
 
 #chat-status {
-    height: 1;
+    height: auto;
+    min-height: 1;
     color: $text-muted;
 }
 
-#form, #confirm, #path-input, #source-preview {
-    width: 60%;
+#api-key,
+#help,
+#form,
+#confirm,
+#path-input,
+#source-preview {
+    width: 70%;
+    max-width: 90;
+    max-height: 90%;
     height: auto;
     padding: 1 2;
     background: $surface;
     border: thick $accent;
     align: center middle;
+}
+
+#source-preview,
+#help {
+    height: 80%;
+}
+
+#source-preview VerticalScroll,
+#help VerticalScroll {
+    height: 1fr;
+}
+
+#source-preview Static,
+#help Markdown {
+    height: auto;
+}
+
+#preview-title {
+    text-style: bold;
+}
+
+#form-error {
+    color: $error;
+    height: auto;
 }
 
 #model-picker {

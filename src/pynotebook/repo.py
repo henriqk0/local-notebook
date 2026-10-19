@@ -49,6 +49,17 @@ def _row_to_message(row: tuple[Any, ...]) -> models.Message:
     )
 
 
+SOURCE_COLUMNS = (
+    "id, notebook_id, path, filename, mime, ext, size, content_text, "
+    "token_estimate, enabled, status, error, added_at"
+)
+
+SOURCE_META_COLUMNS = (
+    "id, notebook_id, path, filename, mime, ext, size, '' AS content_text, "
+    "token_estimate, enabled, status, error, added_at"
+)
+
+
 class Repository:
     def __init__(self, conn: aiosqlite.Connection) -> None:
         self.conn = conn
@@ -62,18 +73,17 @@ class Repository:
         await self.conn.close()
 
     # Notebooks
-    async def create_notebook(self, name: str, description: str = "") -> models.Notebook:
-        await self.conn.execute(
+    async def create_notebook(
+        self, name: str, description: str = ""
+    ) -> models.Notebook:
+        cur = await self.conn.execute(
             "INSERT INTO notebooks (name, description) VALUES (?, ?)",
             (name, description),
         )
+        notebook_id = cur.lastrowid
         await self.conn.commit()
-        notebook_id = self.conn.total_changes
-        # Better to get lastrowid
-        cur = await self.conn.execute("SELECT last_insert_rowid();")
-        row = await cur.fetchone()
-        notebook_id = row[0] if row else notebook_id
-        await cur.close()
+        if notebook_id is None:  # pragma: no cover - SQLite always returns it
+            notebook_id = 0
         return models.Notebook(id=notebook_id, name=name, description=description)
 
     async def list_notebooks(self) -> list[models.Notebook]:
@@ -83,6 +93,21 @@ class Repository:
         rows = await cur.fetchall()
         await cur.close()
         return [_row_to_notebook(r) for r in rows]
+
+    async def list_notebooks_with_counts(self) -> list[tuple[models.Notebook, int]]:
+        cur = await self.conn.execute(
+            """
+            SELECT n.id, n.name, n.description, n.model, n.created_at, n.updated_at,
+                   COUNT(s.id)
+            FROM notebooks AS n
+            LEFT JOIN sources AS s ON s.notebook_id = n.id
+            GROUP BY n.id
+            ORDER BY n.updated_at DESC, n.id DESC
+            """
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return [(_row_to_notebook(r[:6]), int(r[6])) for r in rows]
 
     async def get_notebook(self, notebook_id: int) -> models.Notebook | None:
         cur = await self.conn.execute(
@@ -94,7 +119,11 @@ class Repository:
         return _row_to_notebook(row) if row else None
 
     async def update_notebook(
-        self, notebook_id: int, name: str | None = None, description: str | None = None, model: str | None = None
+        self,
+        notebook_id: int,
+        name: str | None = None,
+        description: str | None = None,
+        model: str | None = None,
     ) -> models.Notebook | None:
         nb = await self.get_notebook(notebook_id)
         if not nb:
@@ -113,7 +142,9 @@ class Repository:
         return await self.get_notebook(notebook_id)
 
     async def delete_notebook(self, notebook_id: int) -> bool:
-        cur = await self.conn.execute("DELETE FROM notebooks WHERE id = ?", (notebook_id,))
+        cur = await self.conn.execute(
+            "DELETE FROM notebooks WHERE id = ?", (notebook_id,)
+        )
         changed = cur.rowcount
         await cur.close()
         await self.conn.commit()
@@ -138,17 +169,76 @@ class Repository:
                 source.error,
             ),
         )
-        await self.conn.commit()
         cur = await self.conn.execute("SELECT last_insert_rowid();")
         row = await cur.fetchone()
         source.id = row[0] if row else source.id
         await cur.close()
+        await self.conn.commit()
+        return source
+
+    async def add_source_with_chunks(
+        self,
+        source: models.Source,
+        chunks: list[tuple[int, str]],
+    ) -> models.Source:
+        try:
+            cur = await self.conn.execute(
+                """INSERT INTO sources (notebook_id, path, filename, mime, ext, size, content_text, token_estimate, enabled, status, error)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    source.notebook_id,
+                    source.path,
+                    source.filename,
+                    source.mime,
+                    source.ext,
+                    source.size,
+                    source.content_text,
+                    source.token_estimate,
+                    1 if source.enabled else 0,
+                    source.status,
+                    source.error,
+                ),
+            )
+            source.id = cur.lastrowid
+            if source.id is not None and chunks:
+                await self.conn.executemany(
+                    "INSERT INTO chunks (source_id, idx, text) VALUES (?, ?, ?)",
+                    [(source.id, idx, text) for idx, text in chunks],
+                )
+            await self.conn.commit()
+        except BaseException:
+            await self.conn.rollback()
+            raise
         return source
 
     async def list_sources(self, notebook_id: int) -> list[models.Source]:
         cur = await self.conn.execute(
-            """SELECT id, notebook_id, path, filename, mime, ext, size, content_text, token_estimate, enabled, status, error, added_at
+            f"""SELECT {SOURCE_COLUMNS}
                FROM sources WHERE notebook_id = ? ORDER BY id ASC""",
+            (notebook_id,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return [_row_to_source(r) for r in rows]
+
+    async def list_source_meta(self, notebook_id: int) -> list[models.Source]:
+        """List source metadata without loading full content into memory."""
+        cur = await self.conn.execute(
+            f"""SELECT {SOURCE_META_COLUMNS}
+               FROM sources WHERE notebook_id = ? ORDER BY id ASC""",
+            (notebook_id,),
+        )
+        rows = await cur.fetchall()
+        await cur.close()
+        return [_row_to_source(r) for r in rows]
+
+    async def list_sources_for_context(self, notebook_id: int) -> list[models.Source]:
+        """Load only enabled, healthy sources for prompt building."""
+        cur = await self.conn.execute(
+            f"""SELECT {SOURCE_COLUMNS}
+               FROM sources
+               WHERE notebook_id = ? AND enabled = 1 AND status = 'ok'
+               ORDER BY id ASC""",
             (notebook_id,),
         )
         rows = await cur.fetchall()
@@ -157,7 +247,7 @@ class Repository:
 
     async def get_source(self, source_id: int) -> models.Source | None:
         cur = await self.conn.execute(
-            """SELECT id, notebook_id, path, filename, mime, ext, size, content_text, token_estimate, enabled, status, error, added_at
+            f"""SELECT {SOURCE_COLUMNS}
                FROM sources WHERE id = ?""",
             (source_id,),
         )
@@ -165,7 +255,9 @@ class Repository:
         await cur.close()
         return _row_to_source(row) if row else None
 
-    async def toggle_source(self, source_id: int, enabled: bool) -> models.Source | None:
+    async def toggle_source(
+        self, source_id: int, enabled: bool
+    ) -> models.Source | None:
         await self.conn.execute(
             "UPDATE sources SET enabled = ? WHERE id = ?",
             (1 if enabled else 0, source_id),
@@ -180,7 +272,14 @@ class Repository:
         await self.conn.commit()
         return changed > 0
 
-    async def update_source_content(self, source_id: int, content_text: str, token_estimate: int, status: str = "ok", error: str | None = None) -> models.Source | None:
+    async def update_source_content(
+        self,
+        source_id: int,
+        content_text: str,
+        token_estimate: int,
+        status: str = "ok",
+        error: str | None = None,
+    ) -> models.Source | None:
         await self.conn.execute(
             "UPDATE sources SET content_text = ?, token_estimate = ?, status = ?, error = ? WHERE id = ?",
             (content_text, token_estimate, status, error, source_id),
@@ -188,13 +287,74 @@ class Repository:
         await self.conn.commit()
         return await self.get_source(source_id)
 
+    async def mark_source_error(
+        self, source_id: int, error: str
+    ) -> models.Source | None:
+        """Mark a source as broken without discarding its existing content."""
+        await self.conn.execute(
+            "UPDATE sources SET status = 'error', error = ?, enabled = 0 WHERE id = ?",
+            (error, source_id),
+        )
+        await self.conn.commit()
+        return await self.get_source(source_id)
+
+    async def replace_source_content(
+        self,
+        source_id: int,
+        *,
+        content_text: str,
+        token_estimate: int,
+        size: int,
+        mime: str | None,
+        ext: str | None,
+        filename: str,
+        status: str,
+        error: str | None,
+        chunks: list[tuple[int, str]],
+    ) -> models.Source | None:
+        """Atomically replace source text, metadata, and chunks."""
+        try:
+            await self.conn.execute(
+                """UPDATE sources
+                   SET content_text = ?, token_estimate = ?, size = ?, mime = ?,
+                       ext = ?, filename = ?, status = ?, error = ?,
+                       enabled = CASE WHEN ? = 'ok' THEN 1 ELSE 0 END
+                   WHERE id = ?""",
+                (
+                    content_text,
+                    token_estimate,
+                    size,
+                    mime,
+                    ext,
+                    filename,
+                    status,
+                    error,
+                    status,
+                    source_id,
+                ),
+            )
+            await self.conn.execute(
+                "DELETE FROM chunks WHERE source_id = ?", (source_id,)
+            )
+            if chunks:
+                await self.conn.executemany(
+                    "INSERT INTO chunks (source_id, idx, text) VALUES (?, ?, ?)",
+                    [(source_id, idx, text) for idx, text in chunks],
+                )
+            await self.conn.commit()
+        except BaseException:
+            await self.conn.rollback()
+            raise
+        return await self.get_source(source_id)
+
     # Chunks
     async def add_chunks(self, source_id: int, chunks: list[tuple[int, str]]) -> None:
-        for idx, text in chunks:
-            await self.conn.execute(
-                "INSERT INTO chunks (source_id, idx, text) VALUES (?, ?, ?)",
-                (source_id, idx, text),
-            )
+        if not chunks:
+            return
+        await self.conn.executemany(
+            "INSERT INTO chunks (source_id, idx, text) VALUES (?, ?, ?)",
+            [(source_id, idx, text) for idx, text in chunks],
+        )
         await self.conn.commit()
 
     async def clear_chunks(self, source_id: int) -> None:
@@ -203,25 +363,33 @@ class Repository:
 
     # Messages
     async def add_message(self, message: models.Message) -> models.Message:
-        await self.conn.execute(
+        cur = await self.conn.execute(
             "INSERT INTO messages (notebook_id, role, content, model) VALUES (?, ?, ?, ?)",
             (message.notebook_id, message.role, message.content, message.model),
         )
+        message.id = cur.lastrowid
         await self.conn.commit()
-        cur = await self.conn.execute("SELECT last_insert_rowid();")
-        row = await cur.fetchone()
-        message.id = row[0] if row else message.id
-        await cur.close()
         return message
 
-    async def list_messages(self, notebook_id: int) -> list[models.Message]:
-        cur = await self.conn.execute(
-            "SELECT id, notebook_id, role, content, model, created_at FROM messages WHERE notebook_id = ? ORDER BY id ASC",
-            (notebook_id,),
-        )
+    async def list_messages(
+        self, notebook_id: int, limit: int | None = None
+    ) -> list[models.Message]:
+        if limit is None:
+            cur = await self.conn.execute(
+                "SELECT id, notebook_id, role, content, model, created_at FROM messages WHERE notebook_id = ? ORDER BY id ASC",
+                (notebook_id,),
+            )
+        else:
+            cur = await self.conn.execute(
+                "SELECT id, notebook_id, role, content, model, created_at FROM messages WHERE notebook_id = ? ORDER BY id DESC LIMIT ?",
+                (notebook_id, max(limit, 1)),
+            )
         rows = await cur.fetchall()
         await cur.close()
-        return [_row_to_message(r) for r in rows]
+        messages = [_row_to_message(r) for r in rows]
+        if limit is not None:
+            messages.reverse()
+        return messages
 
     async def search_chunks(
         self, notebook_id: int, match_query: str, limit: int = 20
@@ -245,14 +413,16 @@ class Repository:
             ORDER BY bm25(chunks_fts)
             LIMIT ?
             """,
-            (match_query, notebook_id, limit),
+            (match_query, notebook_id, max(limit, 1)),
         )
         rows = await cur.fetchall()
         await cur.close()
         return [(r[0], r[1], r[2]) for r in rows]
 
     async def clear_messages(self, notebook_id: int) -> bool:
-        cur = await self.conn.execute("DELETE FROM messages WHERE notebook_id = ?", (notebook_id,))
+        cur = await self.conn.execute(
+            "DELETE FROM messages WHERE notebook_id = ?", (notebook_id,)
+        )
         changed = cur.rowcount
         await cur.close()
         await self.conn.commit()

@@ -41,6 +41,7 @@ Data and config follow XDG conventions:
 - `enter` open notebook
 - `/` filter notebooks
 - `m` choose default model
+- `ctrl+k` change API key
 - `q` quit
 
 ### Notebook

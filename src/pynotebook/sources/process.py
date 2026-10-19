@@ -5,8 +5,12 @@ from pathlib import Path
 from .. import models
 from . import chunk, extract
 
+NO_TEXT_ERROR = "No extractable text found (OCR is not supported)"
 
-def build_source_from_path(notebook_id: int, path: Path) -> tuple[models.Source, list[str]]:
+
+def build_source_from_path(
+    notebook_id: int, path: Path
+) -> tuple[models.Source, list[str]]:
     path = path.expanduser()
     try:
         resolved = path.resolve()
@@ -21,6 +25,8 @@ def build_source_from_path(notebook_id: int, path: Path) -> tuple[models.Source,
         size = 0
 
     content, size, ext, mime, err = extract.extract_text(resolved)
+    if err is None and not content.strip():
+        err = NO_TEXT_ERROR
 
     source = models.Source(
         notebook_id=notebook_id,

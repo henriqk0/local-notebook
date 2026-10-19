@@ -16,13 +16,23 @@ def make_source(sid, filename, text, enabled=True, status="ok"):
 
 
 def test_sanitize_fts_query():
-    assert context.sanitize_fts_query("hello world") == '"hello" OR "world"'
-    assert context.sanitize_fts_query("what's up?") == '"what" OR "s" OR "up"'
+    assert context.sanitize_fts_query("hello world") == '"hello"* OR "world"*'
+    assert context.sanitize_fts_query("what's up?") == '"what"* OR "s"* OR "up"*'
     assert context.sanitize_fts_query("!!!") == ""
 
 
+def test_sanitize_fts_query_dedupes_and_caps():
+    query = "hello hello " + " ".join(f"w{i}" for i in range(50))
+    result = context.sanitize_fts_query(query)
+    assert result.count(" OR ") == context.MAX_FTS_TOKENS - 1
+    assert result.startswith('"hello"* OR "w0"*')
+
+
 def test_full_text_when_under_budget():
-    sources = [make_source(1, "a.txt", "hello world"), make_source(2, "b.txt", "more text")]
+    sources = [
+        make_source(1, "a.txt", "hello world"),
+        make_source(2, "b.txt", "more text"),
+    ]
     result = context.build_context(
         "question",
         sources,
@@ -60,14 +70,39 @@ def test_disabled_and_error_sources_excluded():
     assert result.sources_block == ""
 
 
-def test_history_trimming_keeps_newest():
+def test_history_trimming_keeps_newest_turn():
     history = [
         models.Message(role="user", content="old " * 1000),
         models.Message(role="assistant", content="new"),
     ]
     trimmed = context.trim_history(history, token_budget=5)
     assert trimmed[-1].content == "new"
-    assert len(trimmed) == 1
+    assert len(trimmed) == 2
+    assert trimmed[0].role == "user"
+    assert context.estimate_tokens(trimmed[0].content) <= 4
+
+
+def test_history_trimming_keeps_complete_turns():
+    history = [
+        models.Message(role="user", content="old " * 1000),
+        models.Message(role="assistant", content="old answer"),
+        models.Message(role="user", content="new question"),
+        models.Message(role="assistant", content="new answer"),
+    ]
+    trimmed = context.trim_history(history, token_budget=100)
+    assert [m.content for m in trimmed] == ["new question", "new answer"]
+
+
+def test_history_trimming_never_emits_empty_messages():
+    history = [
+        models.Message(role="user", content="long question " * 100),
+        models.Message(role="assistant", content="short answer"),
+    ]
+    trimmed = context.trim_history(history, token_budget=2)
+    assert all(m.content for m in trimmed)
+    assert trimmed[-1].role == "assistant"
+
+    assert context.trim_history(history, token_budget=0) == []
 
 
 def test_markdown_render_delimiters():
